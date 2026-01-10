@@ -1,0 +1,74 @@
+#include <WiFi.h>
+#include <esp_wifi.h>
+#include <esp_now.h>
+
+#define JOY_X_PIN 35
+#define JOY_Y_PIN 34
+
+uint8_t RX_MAC[6] = { 0xA0, 0xB7, 0x65, 0x21, 0xFC, 0x30 };
+
+typedef struct __attribute__((packed)) {
+  int16_t x; // -1000 to 1000
+  int16_t y;// -1000 to 1000
+} Joy;
+
+Joy joy;
+
+int cx = 2048;// center X
+int cy = 2048;// center Y
+const int DEAD = 80;//ADC deadband around center change from 40-200 if needed depends
+
+
+void setup() {
+  Serial.begin(115200);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true, true);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  //sends a message if the esp is working properly
+  if (esp_now_init() != ESP_OK) { Serial.println("ESP NOW init failed"); while (1) {} }
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, RX_MAC, 6);
+  peer.channel = 1;
+  peer.encrypt = false;
+  if (esp_now_add_peer(&peer) != ESP_OK) { Serial.println("add peer failed"); while (1) {} }
+
+  //This is to calibrate centers (Do not move joystick until you find the deadzone)
+  long sx = 0, sy = 0;
+  const int N = 200;
+  for (int i = 0; i < N; i++) {
+    sx += analogRead(JOY_X_PIN);
+    sy += analogRead(JOY_Y_PIN);
+    delay(5);
+  }
+  cx = sx / N;
+  cy = sy / N;
+
+  Serial.printf("Calibrated center: cx=%d cy=%d\n", cx, cy);
+}
+
+int16_t mapCentered(int raw, int c) {
+  int d = raw - c;
+  if (abs(d) < DEAD) return 0;
+  int v = constrain(raw, 0, 4095);
+
+  //map relative to center at 1000
+  if (v >= c) return (int16_t)map(v, c + DEAD, 4095, 0, 1000);
+  else        return (int16_t)map(v, 0, c - DEAD, -1000, 0);
+}
+
+void loop() {
+  int rawX = analogRead(JOY_X_PIN);
+  int rawY = analogRead(JOY_Y_PIN);
+
+  joy.x = mapCentered(rawX, cx);
+  joy.y = mapCentered(rawY, cy);
+
+  //print to see if its really zero at rest
+  Serial.printf("rawX=%d rawY=%d  x=%d y=%d\n", rawX, rawY, joy.x, joy.y);
+
+  esp_now_send(RX_MAC, (uint8_t*)&joy, sizeof(joy));
+  delay(50);
+}
